@@ -1,118 +1,122 @@
+import streamlit as st
 import yfinance as yf
 import pandas as pd
-import streamlit as st
-from datetime import datetime
+import plotly.express as px
 
+# ========== Filters ==========
+
+def check_filter(curr_open, curr_high, curr_low, curr_close,
+                 prev_open, prev_high, prev_low, prev_close):
+    # Filter 1
+    if (curr_open < prev_high and
+        curr_close < prev_close and
+        curr_high > prev_high):
+        return "Filter 1"
+
+    # Filter 2
+    if (curr_close > prev_low and
+        curr_low < prev_low and
+        curr_high < prev_high):
+        return "Filter 2"
+   
+    return None
+
+
+# ========== Assets ==========
 forex_pairs = [
-    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCHF=X", "NZDUSD=X",
-    "USDCAD=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"
+    "EURUSD=X","GBPUSD=X","USDJPY=X","USDCHF=X","AUDUSD=X","NZDUSD=X",
+    "USDCAD=X","EURGBP=X","EURJPY=X","EURCHF=X","EURAUD=X","EURNZD=X","EURCAD=X",
+    "GBPJPY=X","GBPCHF=X","GBPAUD=X","GBPNZD=X","GBPCAD=X",
+    "AUDJPY=X","AUDNZD=X","AUDCAD=X","AUDCHF=X",
+    "NZDJPY=X","NZDCAD=X","NZDCHF=X",
+    "CADJPY=X","CADCHF=X",
+    "CHFJPY=X"
 ]
 
+
+commodities = [
+    "GC=F",   # Gold
+    "SI=F",   # Silver
+    "CL=F",   # Crude Oil WTI
+    "BZ=F",   # Brent Oil
+    "NG=F",   # Natural Gas
+    "HG=F",   # Copper
+    "PL=F",   # Platinum
+    "PA=F"    # Palladium
+]
+
+
+
+indices = [
+    "^GSPC",   # S&P 500
+    "^DJI",    # Dow Jones
+    "^IXIC",   # Nasdaq
+    "^FTSE",   # FTSE 100
+    "^GDAXI",  # DAX
+    "^FCHI",   # CAC 40
+    "^N225",   # Nikkei 225
+    "^HSI",    # Hang Seng
+    "^STOXX50E", # Euro Stoxx 50
+    "^AXJO"    # ASX 200
+]
+
+
+assets = forex_pairs + commodities + indices
+
+# Timeframes
 timeframes = {
-    "1H": "60m",
-    "4H": "60m",  # Will resample to 4H
-    "D": "1d",
-    "W": "1wk",
-    "M": "1mo"
+    "Daily": "1d",
+    "Weekly": "1wk",
+    "Monthly": "1mo"
 }
 
 
-def resample_4h(df):
-    # Make sure index is datetime and sorted
-    df = df.copy()
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
+# ========== Streamlit UI ==========
+st.set_page_config(page_title="Market Filters Dashboard", layout="wide")
+st.title("📊 Market Filters Dashboard")
 
-    ohlc_dict = {
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum'
-    }
-    df_4h = df.resample('4H').apply(ohlc_dict).dropna()
-    return df_4h
+selected_tf = st.selectbox("Select Timeframe", list(timeframes.keys()))
+period_years = st.slider("Backtest Period (years)", 1, 10, 5)
 
 
-def check_condition(current, previous):
-    # All should be scalar floats
+# ========== Backtest Logic ==========
+all_results = []
+
+for ticker in assets:
     try:
-        c_close = float(current['Close'])
-        c_low = float(current['Low'])
-        c_high = float(current['High'])
-        p_low = float(previous['Low'])
-        p_high = float(previous['High'])
-    except Exception as e:
-        st.error(f"Data conversion error: {e}")
-        return False
-
-    return (c_close > p_low) and (c_low < p_low) and (c_high < p_high)
-
-
-
-def fetch_and_check(pair, tf_label, tf_interval):
-    # Set period to fetch data sufficiently long for each timeframe
-    if tf_interval == '60m':
-        period = "10d"
-    elif tf_interval == '1d':
-        period = "60d"
-    elif tf_interval == '1wk':
-        period = "365d"
-    else:
-        period = "730d"
-
-    df = yf.download(tickers=pair, interval=tf_interval, period=period, progress=False)
-
-    # Validate data exists and has required columns
-    if df.empty or len(df) < 2:
-        return False
-
-    if tf_label == "4H":
-        # Resample 60m data to 4H
-        df = resample_4h(df)
+        df = yf.download(ticker, period=f"{period_years}y", interval=timeframes[selected_tf], progress=False)
         if len(df) < 2:
-            return False
+            continue
 
-    # Get the last two complete candles
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
+        for i in range(1, len(df)):    
+            prev = df.iloc[i-1]
+            curr = df.iloc[i]
+            filter_passed = check_filter(curr["Open"], curr["High"], curr["Low"], curr["Close"],
+                                         prev["Open"], prev["High"], prev["Low"], prev["Close"])
+            if filter_passed:
+                all_results.append([ticker, df.index[i], filter_passed])
+    except Exception as e:
+        st.write(f"⚠️ Error with {ticker}: {e}")
 
-    return check_condition(current, previous)
+# Convert to DataFrame
+if all_results:
+    signals_df = pd.DataFrame(all_results, columns=["Symbol","Date","Filter"])
 
+    # Show recent signals
+    st.subheader("📌 Latest Signals")
+    latest_signals = signals_df.sort_values("Date", ascending=False).head(50)
+    st.dataframe(latest_signals, use_container_width=True)
 
-def run_scan():
-    matches = []
-    for pair in forex_pairs:
-        for tf_label, tf_interval in timeframes.items():
-            try:
-                if fetch_and_check(pair, tf_label, tf_interval):
-                    matches.append((pair, tf_label))
-            except Exception as e:
-                st.error(f"Error processing {pair} {tf_label}: {e}")
-    return matches
+    # Aggregate counts for chart
+    summary = signals_df.groupby(["Date","Filter"]).size().unstack(fill_value=0)
 
+    # Plot stacked bar chart
+    st.subheader("📈 Historical Backtest Results")
+    fig = px.bar(summary, x=summary.index, y=summary.columns,
+                 title=f"Signals by Date ({selected_tf})", barmode="stack")
+    st.plotly_chart(fig, use_container_width=True)
 
-
-st.title("Forex Pairs Alert Dashboard")
-st.write("Checking condition: Current candle vs previous candle on same timeframe")
-
-if st.button("Run Scan"):
-    with st.spinner("Scanning..."):
-        matched_pairs = run_scan()
-
-    if matched_pairs:
-        st.success(f"Found {len(matched_pairs)} matching pairs!")
-        for pair, tf in matched_pairs:
-            st.markdown(f"✅ **{pair}** on **{tf}** timeframe")
-    else:
-        st.info("No pairs matched the condition at this time.")
-
-
-st.write("---")
-st.caption("Last update: " + datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"))
-
-st_autorefresh = st.checkbox("Auto refresh every 10 minutes", value=False)
-if st_autorefresh:
-    st.experimental_rerun()
+else:
+    st.info("No signals found for the selected timeframe/period.")
 
 
